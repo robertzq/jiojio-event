@@ -8,70 +8,81 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. 连接 MongoDB (建议加上鉴权)
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/jiojio_event');
+// 1. 连接数据库
+mongoose.connect(process.env.MONGO_URI || 'mongodb://mongo:27017/jiojio_event')
+  .then(() => console.log('MongoDB Connected'))
+  .catch(err => console.error('MongoDB Error:', err));
 
-// 2. 定义 Schema
+// 2. 定义留言模型
 const MessageSchema = new mongoose.Schema({
-  nickname: { type: String, required: true }, // 留言ID/昵称
-  content: { type: String, required: true },  // 留言内容
-  contact: String,                            //以此联系中奖
+  nickname: { type: String, required: true }, // 核心字段：ID/昵称
+  content: { type: String, required: true },  // 核心字段：留言内容
   createdAt: { type: Date, default: Date.now }
 });
 const Message = mongoose.model('Message', MessageSchema);
 
-// 3. 配置邮件发送服务 (以QQ邮箱或网易为例，阿里云由于封25端口，必须用SSL 465)
+// 3. 邮件服务配置 (如果没配好，会打印错误但不会崩)
 const transporter = nodemailer.createTransport({
-  service: 'qq', // 或者 'smtp.ym.163.com' 等企业邮
-  secure: true,  // 必须为 true
+  service: 'qq', 
+  secure: true,
   port: 465,
   auth: {
-    user: process.env.EMAIL_USER, // 发件人邮箱
-    pass: process.env.EMAIL_PASS  // SMTP 授权码
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
 });
 
-// --- API 路由 ---
+// --- 接口区域 ---
 
-// 提交留言接口
+// [POST] 提交留言
 app.post('/api/message', async (req, res) => {
   try {
-    const { nickname, content, contact } = req.body;
-    
-    // 保存到数据库
-    const msg = await Message.create({ nickname, content, contact });
+    const { nickname, content } = req.body;
+    if (!nickname || !content) return res.status(400).json({ error: '请填写完整' });
 
-    // 异步发送邮件给她 (不阻塞响应)
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: process.env.TARGET_EMAIL, // "她"的邮箱
-      subject: `【新留言】来自 ${nickname} 的祝福`,
-      text: `ID/昵称: ${nickname}\n内容: ${content}\n联系方式: ${contact}\n时间: ${new Date().toLocaleString()}`
-    };
-    
-    transporter.sendMail(mailOptions).catch(err => console.error('邮件发送失败:', err));
+    // 存入数据库
+    const msg = await Message.create({ nickname, content });
+    console.log(`收到新留言: ${nickname}`);
 
-    res.json({ success: true, id: msg._id });
+    // 发邮件 (异步执行，不阻塞用户)
+    if (process.env.EMAIL_USER) {
+        const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: process.env.TARGET_EMAIL,
+          subject: `【新留言】来自 ${nickname}`,
+          text: `ID: ${nickname}\n内容: ${content}\n时间: ${new Date().toLocaleString()}`
+        };
+        transporter.sendMail(mailOptions).catch(e => console.error('邮件发送失败:', e.message));
+    }
+
+    res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: '提交失败' });
+    console.error(error);
+    res.status(500).json({ error: '服务器开小差了' });
   }
 });
 
-// 隐藏抽奖接口 (随机抽取10人)
-// 也可以加一个简单的 secret key 校验防止被路人刷接口
-app.get('/api/draw-lucky-dogs', async (req, res) => {
-  try {
-    const secret = req.query.key;
-    if (secret !== process.env.DRAW_SECRET) return res.status(403).send('滚犊子');
+// [GET] 导出 JSON (给 Godot 抽奖用)
+// 访问方式: /api/export?secret=你的密钥
+app.get('/api/export', async (req, res) => {
+  const secret = req.query.secret;
+  // 简单校验一下，防止别人瞎下载
+  if (secret !== process.env.DRAW_SECRET) {
+    return res.status(403).json({ error: '暗号错误' });
+  }
 
-    // MongoDB 原生随机抽样
-    const winners = await Message.aggregate([
-      { $sample: { size: 10 } }
-    ]);
+  try {
+    // 只取 nickname 和 content，不需要其他字段
+    const data = await Message.find({}, 'nickname content -_id');
     
-    res.json(winners);
+    // 设置为下载文件
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename=lottery_data.json');
+    
+    // 发送格式化后的 JSON
+    res.send(JSON.stringify(data, null, 2));
   } catch (error) {
-    res.status(500).json({ error: '抽奖失败' });
+    res.status(500).json({ error: '导出失败' });
   }
 });
 

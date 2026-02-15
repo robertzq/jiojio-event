@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # 1. 数据库服务
+  mongo:
+    image: mongo:latest
+    restart: always
+    volumes:
+      - ./mongo-data:/data/db
+    networks:
+      - app-network
+
+  # 2. 后端服务 (Node.js)
+  backend:
+    build: ./server
+    restart: always
+    ports:
+      - "3000:3000" # 暴露出来方便调试，生产环境其实可以不暴露，走内部网络
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/jiojio_event # 注意这里主机名是 mongo
+      - DRAW_SECRET=${DRAW_SECRET}
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
+  # 3. 前端服务 (Nginx + Vue Build)
+  frontend:
+    build: ./client
+    restart: always
+    ports:
+      - "8080:80" # 宿主机的 8080 映射到容器的 80
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
